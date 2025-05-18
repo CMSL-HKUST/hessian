@@ -25,12 +25,12 @@ onp.set_printoptions(threshold=sys.maxsize,
                      suppress=True,
                      precision=10)
 
-# # Latex style plot
-# plt.rcParams.update({
-#     "text.latex.preamble": r"\usepackage{amsmath}",
-#     "text.usetex": True,
-#     "font.family": "sans-serif",
-#     "font.sans-serif": ["Helvetica"]})
+# Latex style plot
+plt.rcParams.update({
+    "text.latex.preamble": r"\usepackage{amsmath}",
+    "text.usetex": True,
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Helvetica"]})
 
 
 logger.setLevel(logging.INFO)
@@ -69,7 +69,7 @@ class HessVecProductPoisson(HessVecProduct):
             self.J_values.append(self.J_value)
             if self.opt_flag == 'cg_ad':
                 inv_vtk_dir, = self.args
-                save_sol(self.problem.fes[0], self.cached_vars['u'][0], os.path.join(inv_vtk_dir, f'u_{self.opt_step:05d}.vtu'),
+                save_sol(self.problem.fes[0], self.u_to_save[0], os.path.join(inv_vtk_dir, f'u_{self.opt_step:05d}.vtu'),
                     cell_infos=[('θ', np.mean(self.unflatten(θ_flat), axis=-1))])
 
 
@@ -134,11 +134,6 @@ def workflow():
             θ_vec = jax.flatten_util.ravel_pytree(θ)[0]
             return 1e3*l2_error**2 + 0*np.sum(θ_vec**2)
 
-        # def J_fn(u, θ):
-        #     u_pred = u
-        #     θ_vec = jax.flatten_util.ravel_pytree(θ)[0]
-        #     return np.sum((u_pred[0] - u_true[0])**2) + 0.*np.sum(θ_vec**2)
-
         θ_ini = 1*np.ones_like(quad_points)[:, :, 0]
         u_ini = fwd_pred(θ_ini)
         save_sol(problem.fes[0], u_ini[0], os.path.join(inv_vtk_dir, f'u_{0:05d}.vtu'), cell_infos=[('θ', np.mean(θ_ini, axis=-1))])
@@ -182,30 +177,33 @@ def generate_figures():
     labels = ['Newton-CG (AD)', 'L-BFGS-B']
     colors = ['red', 'blue']
     markers = ['o', 's']
-    # plt.figure(figsize=(10, 10))
-    plt.figure()
+    drops = [1, 0]
+    plt.figure(figsize=(8, 6))
+    # plt.figure()
 
     for i, opt_flag in enumerate(opt_flags):
         time_elapsed = np.load(os.path.join(inv_numpy_dir, f'time_{opt_flag}.npy'))
         num_J, num_grad, num_hessp_full, num_hessp_cached = np.load(os.path.join(inv_numpy_dir, f'opt_info_{opt_flag}.npy'))
         J_values = np.load(os.path.join(inv_numpy_dir, f'obj_{opt_flag}.npy'))
+        opt_steps = len(J_values)
 
-        print(f"opt_flag = {opt_flag}")
+        print(f"\nopt_flag = {opt_flag}")
         print(f"Time elapsed is {time_elapsed}")
         print(f"J_values = {J_values}")
         print(f"num_J = {num_J}, num_grad = {num_grad}, num_hessp_full = {num_hessp_full}, num_hessp_cached = {num_hessp_cached}")
+        print(f"Final value for obj = {J_values[opt_steps - drops[i] - 1]}")
 
-        plt.plot(np.linspace(0, time_elapsed, len(J_values)), J_values, 
-            linestyle='-', marker=markers[i], markersize=10, linewidth=2, color=colors[i], label=labels[i])        
+        plt.plot(np.linspace(0, time_elapsed, opt_steps)[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
+            linestyle='-', marker=markers[i], markersize=8, linewidth=2, color=colors[i], label=labels[i])        
 
-        plt.xlabel(f"Execution time [s]", fontsize=20)
-        plt.ylabel("Objective value", fontsize=20)
-        plt.tick_params(labelsize=20)
-        plt.tick_params(labelsize=20)
-        plt.legend(fontsize=20, frameon=False)   
+        plt.xlabel(f"Execution time [s]", fontsize=16)
+        plt.ylabel("Objective value", fontsize=16)
+        plt.tick_params(labelsize=16)
+        plt.tick_params(labelsize=16)
+        plt.legend(fontsize=16, frameon=False)   
 
     plt.savefig(os.path.join(inv_pdf_dir, f'obj.pdf'), bbox_inches='tight')
-    plt.show()
+    # plt.show()
 
 
 if __name__=="__main__":

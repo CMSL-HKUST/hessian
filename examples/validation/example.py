@@ -17,7 +17,7 @@ from jax_fem.generate_mesh import get_meshio_cell_type, Mesh, rectangle_mesh
 from jax_fem import logger
 
 from hessian.manager import HessVecProduct
-from hessian.hessp import compute_l2_norm_error
+from hessian.utils import compute_l2_norm_error
 
 
 onp.set_printoptions(threshold=sys.maxsize,
@@ -223,7 +223,7 @@ def workflow():
         os.makedirs(fwd_numpy_dir, exist_ok=True)
         np.save(os.path.join(fwd_numpy_dir, f'u.npy'), sol_list_true[0])
 
-    run_inverse_flag = True
+    run_inverse_flag = False
     if run_inverse_flag:
         sol_list_true = [np.load(os.path.join(fwd_numpy_dir, f'u.npy'))]
         def J_fn(u, θ):
@@ -275,22 +275,6 @@ def workflow():
 
                 vHv_results = np.array(vHv_results)
                 np.save(os.path.join(val_numpy_dir, f'vHv_results_{hessp_option}.npy'), vHv_results)
-
-                # num_seeds = 10
-                # taylor_results_full = []
-                # for i in range(num_seeds):
-                #     taylor_results_full.append([])
-                #     for h in hs:
-                #         print(f"\n\n######################## Random testing {hessp_option}: h = {h}, seed = {i + 1} ")
-                #         seed_1 = i + 1
-                #         seed_2 = i + 1 + num_seeds
-
-                #         f_plus_val, f_val, v_f_grad, v_hess_v = taylor_remainder_test(hess_vec_prod, h, seed_1, seed_2)
-                #         taylor_results_full[-1].append([h, f_plus_val, f_val, v_f_grad, v_hess_v])
-
-                # taylor_results_full = np.array(taylor_results_full)
-                # os.makedirs(val_numpy_dir, exist_ok=True)
-                # np.save(os.path.join(val_numpy_dir, f'taylor_results_full_{hessp_option}.npy'), taylor_results_full)
 
 
 def generate_figures():
@@ -429,5 +413,5 @@ def relative_error_AD_modes():
 
 if __name__=="__main__":
     # workflow()
-    # generate_figures()
-    relative_error_AD_modes()
+    generate_figures()
+    # relative_error_AD_modes()

@@ -2,8 +2,9 @@ import numpy as onp
 import jax
 import jax.numpy as np
 import os
+import meshio
 import glob
-import scipy
+import sys
 import logging
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
@@ -18,16 +19,27 @@ from jax_fem import logger
 from hessian.manager import HessVecProduct
 from hessian.utils import compute_l2_norm_error, timing_wrapper
 
+onp.set_printoptions(threshold=sys.maxsize,
+                     linewidth=1000,
+                     suppress=True,
+                     precision=10)
+
+# Latex style plot
+plt.rcParams.update({
+    "text.latex.preamble": r"\usepackage{amsmath}",
+    "text.usetex": True,
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Helvetica"]})
+
 logger.setLevel(logging.INFO)
 
 output_dir = os.path.join(os.path.dirname(__file__), f'output')
 fwd_dir = os.path.join(output_dir, 'forward')
 fwd_vtk_dir = os.path.join(output_dir, 'forward/vtk')
-fwd_numpy_dir = os.path.join(output_dir, 'forward/numpy')
 inv_vtk_dir = os.path.join(output_dir, 'inverse/vtk')
 inv_numpy_dir = os.path.join(output_dir, 'inverse/numpy')
 inv_pdf_dir = os.path.join(output_dir, 'inverse/pdf')
-os.makedirs(fwd_numpy_dir, exist_ok=True)
+
 os.makedirs(inv_numpy_dir, exist_ok=True)
 os.makedirs(inv_pdf_dir, exist_ok=True)
 
@@ -36,7 +48,7 @@ def scaled_sigmoid(x, lower_lim, upper_lim, p=0.1):
     return lower_lim + (upper_lim - lower_lim)/((1. + np.exp(-x*p)))
 
 
-def pore_fn(x, pore_center, L0, c1, c2, beta):
+def pore_fn(x, pore_center, L0, beta):
     beta = scaled_sigmoid(beta, -np.pi/4., np.pi/4., p=0.1)
     porosity = 0.5
     theta = np.arctan2(x[1] - pore_center[1], x[0] - pore_center[0]) 
@@ -47,7 +59,7 @@ def pore_fn(x, pore_center, L0, c1, c2, beta):
     rho = 1./(1. + np.exp(-(np.abs(x_rel) + np.abs(y_rel) - 0.9*L0/2)*p))
     return rho
 
-pore_fn_vmap = jax.vmap(pore_fn, in_axes=(0, None, None, None, None, None))
+pore_fn_vmap = jax.vmap(pore_fn, in_axes=(0, None, None, None))
 
 
 class Elasticity(Problem):
@@ -103,14 +115,14 @@ class Elasticity(Problem):
 
     def set_params(self, params):
         # Override base class method.
-        c1, c2, beta = params
+        beta = params
         rhos = np.ones((self.fe.num_cells, self.fe.num_quads))
         for i in range(len(self.pore_center_list)):
             quad_inds = self.quad_inds_list[i]
             # (num_selected_quad_points, dim)
             quad_points = self.physical_quad_points[quad_inds[:, 0], quad_inds[:, 1]]
             pore_center = self.pore_center_list[i]
-            rho_vals = pore_fn_vmap(quad_points, pore_center, self.L0, c1[i], c2[i], beta[i])
+            rho_vals = pore_fn_vmap(quad_points, pore_center, self.L0, beta[i])
             rhos = rhos.at[quad_inds[:, 0], quad_inds[:, 1]].set(rho_vals)
         self.internal_vars = [rhos]
 
@@ -138,7 +150,7 @@ class HessVecProductPore(HessVecProduct):
             self.J_values.append(self.J_value)
             if self.opt_flag == 'cg_ad':
                 θ = self.unflatten(θ_flat)
-                sol_list = self.cached_vars['u']
+                sol_list = self.u_to_save
                 rho = jax.lax.stop_gradient(self.problem.internal_vars[0])
                 inv_vtk_dir, = self.args
                 save_sol(self.problem.fe, np.hstack((sol_list[0], np.zeros((len(sol_list[0]), 1)))), 
@@ -178,7 +190,7 @@ def workflow():
         for f in files:
             os.remove(f)
 
-        params = np.array([[0.]*nx*ny, [0.]*nx*ny, [0.]*nx*ny])
+        params = np.array([0.])
         sol_list_true = fwd_pred(params)
         save_sol(problem.fe, np.hstack((sol_list_true[0], np.zeros((len(sol_list_true[0]), 1)))), 
             os.path.join(fwd_vtk_dir, f'u.vtu'), cell_infos=[('rho', np.mean(problem.internal_vars[0], axis=-1))])
@@ -194,12 +206,13 @@ def workflow():
             compliace = problem.compute_compliance(sol_list[0])
             return 1e5*compliace
 
-        θ_ini = np.array([[0.]*nx*ny, [0.]*nx*ny, [0.]*nx*ny])
+        θ_ini = np.array([0.]*nx*ny)
         u_ini = fwd_pred(θ_ini)
         save_sol(problem.fe, np.hstack((u_ini[0], np.zeros((len(u_ini[0]), 1)))), 
             os.path.join(inv_vtk_dir, f'u_{0:05d}.vtu'), cell_infos=[('rho', np.mean(problem.internal_vars[0], axis=-1))])
 
         opt_flags = ['cg_ad', 'cg_fd', 'bgfs'] # ['cg_ad', 'cg_fd', 'bgfs']
+        # opt_flags = ['cg_fd']
         for opt_flag in opt_flags:
             option_umfpack = {'umfpack_solver': {}}
             hess_vec_prod = HessVecProductPore(problem, J_fn, θ_ini, option_umfpack, option_umfpack, inv_vtk_dir)
@@ -236,29 +249,35 @@ def postprocess_results(hess_vec_prod, result, time_elapsed):
 def generate_figures():
     opt_flags = ['cg_ad', 'cg_fd', 'bgfs']
     labels = ['Newton-CG (AD)', 'Newton-CG (FD)', 'L-BFGS-B']
-    colors = ['red', 'blue', 'green']
-    markers = ['o', 's', '^']
-    # plt.figure(figsize=(10, 10))
-    plt.figure()
+    colors = ['red', 'green', 'blue']
+    markers = ['o', '^', 's']
+    drops = [0, 0, 1]
+    num_opt_steps = []
+    plt.figure(figsize=(8, 6))
+    # plt.figure()
 
     for i, opt_flag in enumerate(opt_flags):
         time_elapsed = np.load(os.path.join(inv_numpy_dir, f'time_{opt_flag}.npy'))
         num_J, num_grad, num_hessp_full, num_hessp_cached = np.load(os.path.join(inv_numpy_dir, f'opt_info_{opt_flag}.npy'))
         J_values = np.load(os.path.join(inv_numpy_dir, f'obj_{opt_flag}.npy'))
+        J_values = J_values/1e5
+        opt_steps = len(J_values)
+        num_opt_steps.append(opt_steps)
 
-        print(f"opt_flag = {opt_flag}")
+        print(f"\nopt_flag = {opt_flag}")
         print(f"Time elapsed is {time_elapsed}")
         print(f"J_values = {J_values}")
         print(f"num_J = {num_J}, num_grad = {num_grad}, num_hessp_full = {num_hessp_full}, num_hessp_cached = {num_hessp_cached}")
+        print(f"Final value for obj = {J_values[opt_steps - drops[i] - 1]}")
 
-        plt.plot(np.linspace(0, time_elapsed, len(J_values)), J_values, 
-            linestyle='-', marker=markers[i], markersize=10, linewidth=2, color=colors[i], label=labels[i])        
+        plt.plot(np.linspace(0, time_elapsed, opt_steps)[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
+            linestyle='-', marker=markers[i], markersize=8, linewidth=2, color=colors[i], label=labels[i])        
 
-        plt.xlabel(f"Execution time [s]", fontsize=20)
-        plt.ylabel("Objective value", fontsize=20)
-        plt.tick_params(labelsize=20)
-        plt.tick_params(labelsize=20)
-        plt.legend(fontsize=20, frameon=False)   
+        plt.xlabel(f"Execution time [s]", fontsize=16)
+        plt.ylabel("Objective value [J]", fontsize=16)
+        plt.tick_params(labelsize=16)
+        plt.tick_params(labelsize=16)
+        plt.legend(fontsize=16, frameon=False)     
 
     plt.savefig(os.path.join(inv_pdf_dir, f'obj.pdf'), bbox_inches='tight')
     plt.show()

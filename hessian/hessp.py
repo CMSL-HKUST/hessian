@@ -32,10 +32,10 @@ def adjoint_step(problem, u, θ, J_fn, F_fn, adjoint_solver_options):
     A = get_A(problem)
     λ_rhs = jax.grad(J_fn)(u, θ)
     λ_rhs_vec = jax.flatten_util.ravel_pytree(λ_rhs)[0]
-    A.transpose()
-    λ_vec = linear_solver(A, -λ_rhs_vec, None, adjoint_solver_options)
+    A_T = A.transpose()
+    λ_vec = linear_solver(A_T, -λ_rhs_vec, None, adjoint_solver_options)
     λ = problem.unflatten_fn_sol_list(λ_vec)
-    A.transpose() # This step is necessary because A is already changed (in-place update)
+    A.transpose() # This step is necessary because A may already be changed (in-place update)
     return λ, A
 
 
@@ -173,9 +173,10 @@ def incremental_forward_and_adjoint(u, θ, λ, θ_hat, J_fn, F_fn, A, state_line
                                        du_k_dθ_j_F_i_λ_i_θ_hat_j)
 
     λ_hat_rhs_vec = jax.flatten_util.ravel_pytree(λ_hat_rhs)[0]
-    A.transpose()
-    λ_hat_vec = adjoint_linear_solver(A, -λ_hat_rhs_vec)
-    A.transpose()
+
+    A_T = A.transpose()
+    λ_hat_vec = adjoint_linear_solver(A_T, -λ_hat_rhs_vec)
+    A.transpose() # This step is necessary because A may already be changed (in-place update)
     λ_hat = unflatten(λ_hat_vec)
 
     # Find hessian-vector product

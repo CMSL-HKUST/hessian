@@ -29,6 +29,7 @@ class HessVecProduct:
         self.J_value = self.J(self.θ_ini_flat)
         self.counter['J'] -= 1 # No need to count this: offset by 1.
         self.J_values = [self.J_value]
+        self.u_to_save = None
 
     def J(self, θ_flat):
         logger.info(f"########################## hess_vec_prod.J is called...")
@@ -37,6 +38,7 @@ class HessVecProduct:
         u, F_fn = forward_step(self.problem, θ, self.solver_options)
         J_value = self.J_fn(u, θ)
         self.J_value = J_value
+        self.u_to_save = u
         logger.info(f"J_value = {J_value}")
         return J_value
 

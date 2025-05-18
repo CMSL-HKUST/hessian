@@ -25,6 +25,13 @@ onp.set_printoptions(threshold=sys.maxsize,
                      suppress=True,
                      precision=10)
 
+# Latex style plot
+plt.rcParams.update({
+    "text.latex.preamble": r"\usepackage{amsmath}",
+    "text.usetex": True,
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Helvetica"]})
+
 logger.setLevel(logging.INFO)
 
 
@@ -84,24 +91,8 @@ class HessVecProductTraction(HessVecProduct):
             self.J_values.append(self.J_value)
             if self.opt_flag == 'cg_ad':
                 inv_vtk_dir, = self.args
-                save_sol(self.problem.fes[0], self.cached_vars['u'][0], os.path.join(inv_vtk_dir, f'u_{self.opt_step:05d}.vtu'))
+                save_sol(self.problem.fes[0], self.u_to_save[0], os.path.join(inv_vtk_dir, f'u_{self.opt_step:05d}.vtu'))
                 np.save(os.path.join(inv_numpy_dir, f'traction_{self.opt_step:05d}.npy'), self.unflatten(θ_flat))
-
-
-def visualize_traction(case, steps=None):
-    y_pos, traction = np.load(os.path.join(fwd_numpy_dir, f'traction.npy'))
-    fig = plt.figure(figsize=(8, 6)) 
-    plt.title(f'Ground truth')
-    plt.plot(y_pos, traction, color='blue', marker='o', markersize=4, linestyle='None')
-     
-    if case == 'inverse':
-        for step in steps:
-            traction = np.load(os.path.join(inv_numpy_dir, f'traction_{step:05d}.npy'))
-            fig = plt.figure(figsize=(8, 6)) 
-            plt.title(f'Step {step}')
-            plt.plot(y_pos, traction, color='blue', marker='o', markersize=4, linestyle='None')
-
-    plt.show()
 
 
 def workflow():
@@ -139,7 +130,7 @@ def workflow():
             os.remove(f)
 
         # traction_true = np.ones((surface_quad_points.shape[0], surface_quad_points.shape[1])) 
-        traction_true = 1e5*np.exp(-(np.power(surface_quad_points[:, :, 0] - Lx/2., 2)) / (2.*(Ly/5.)**2))
+        traction_true = 1e5*np.exp(-(np.power(surface_quad_points[:, :, 0] - Lx/2., 2)) / (2.*(Lx/5.)**2))
 
         sol_list_true = fwd_pred(traction_true)
 
@@ -148,7 +139,7 @@ def workflow():
         np.save(os.path.join(fwd_numpy_dir, f'u.npy'), sol_list_true[0])
         np.save(os.path.join(fwd_numpy_dir, f'traction.npy'), np.stack([surface_quad_points[:, :, 0], traction_true]))
 
-    run_inverse_flag = True
+    run_inverse_flag = False
     if run_inverse_flag:
         files = glob.glob(os.path.join(inv_vtk_dir, f'*'))
         for f in files:
@@ -164,40 +155,15 @@ def workflow():
             # A good implementation of the optimizer should not depend the scaling factor, but scipy Newton-CG does depend.
             return 1e10*l2_error**2 + 0*np.sum(θ_vec**2)
  
-
-        # traction_ini = 1e5*np.ones_like(surface_quad_points)[:, :, 0]
-        # sol_list_ini = fwd_pred(traction_ini)
-        # save_sol(problem.fes[0], sol_list_ini[0], os.path.join(inv_vtk_dir, f'u_{0:05d}.vtu'))
-        # os.makedirs(inv_numpy_dir, exist_ok=True)
-        # np.save(os.path.join(inv_numpy_dir, f'traction_{0:05d}.npy'), traction_ini)
-
-        # hess_vec_prod = HessVecProductTraction(problem, J_fn, traction_ini, {}, {}, inv_vtk_dir)
-
-        # # About 60s to achieve J=0.008
-        # # result = minimize(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, method='newton-cg', jac=hess_vec_prod.grad, 
-        # #     hessp=hess_vec_prod.hessp, callback=hess_vec_prod.callback, options={'maxiter': 20, 'xtol': 1e-30})
-
-        # # Not converging
-        # # result = minimize(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, method='newton-cg', jac=hess_vec_prod.grad, 
-        # #      callback=hess_vec_prod.callback, options={'maxiter': 20, 'xtol': 1e-30})
-
-
-        # # About 100s to achieve J=0.008
-        # result = minimize(hess_vec_prod.J, hess_vec_prod.θ_ini_flat, method='L-BFGS-B', jac=hess_vec_prod.grad, 
-        #     callback=hess_vec_prod.callback, options={'maxiter': 100, 'disp': True, 'gtol': 1e-20, 'xtol': 1e-30}) 
-
-        # print(result)
- 
-
         traction_ini = 1e5*np.ones_like(surface_quad_points)[:, :, 0]
         sol_list_ini = fwd_pred(traction_ini)
         save_sol(problem.fes[0], sol_list_ini[0], os.path.join(inv_vtk_dir, f'u_{0:05d}.vtu'))
         np.save(os.path.join(inv_numpy_dir, f'traction_{0:05d}.npy'), traction_ini)
 
-        opt_flags = ['cg_ad', 'bgfs'] # ['cg_ad', 'cg_fd', 'bgfs']
+        opt_flags = ['cg_ad'] # ['cg_ad', 'cg_fd', 'bgfs']
         for opt_flag in opt_flags:
             hess_vec_prod = HessVecProductTraction(problem, J_fn, traction_ini, {}, {}, inv_vtk_dir)
-            hess_vec_prod.timing_flag = True
+            hess_vec_prod.timing_flag = False
             hess_vec_prod.opt_flag = opt_flag
             if opt_flag == 'cg_ad':
                 result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
@@ -229,37 +195,69 @@ def postprocess_results(hess_vec_prod, result, time_elapsed):
         np.save(os.path.join(inv_numpy_dir, f'obj_{hess_vec_prod.opt_flag}.npy'), hess_vec_prod.J_values)
 
 
+
 def generate_figures():
     opt_flags = ['cg_ad', 'bgfs']
     labels = ['Newton-CG (AD)', 'L-BFGS-B']
     colors = ['red', 'blue']
     markers = ['o', 's']
-    # plt.figure(figsize=(10, 10))
-    plt.figure()
+    drops = [0, 7]
+    num_opt_steps = []
+    plt.figure(figsize=(8, 6))
+    # plt.figure()
 
     for i, opt_flag in enumerate(opt_flags):
         time_elapsed = np.load(os.path.join(inv_numpy_dir, f'time_{opt_flag}.npy'))
         num_J, num_grad, num_hessp_full, num_hessp_cached = np.load(os.path.join(inv_numpy_dir, f'opt_info_{opt_flag}.npy'))
         J_values = np.load(os.path.join(inv_numpy_dir, f'obj_{opt_flag}.npy'))
+        J_values = J_values/1e10
+        opt_steps = len(J_values)
+        num_opt_steps.append(opt_steps)
 
-        print(f"opt_flag = {opt_flag}")
+        print(f"\nopt_flag = {opt_flag}")
         print(f"Time elapsed is {time_elapsed}")
         print(f"J_values = {J_values}")
         print(f"num_J = {num_J}, num_grad = {num_grad}, num_hessp_full = {num_hessp_full}, num_hessp_cached = {num_hessp_cached}")
+        print(f"Final value for obj = {J_values[opt_steps - drops[i] - 1]}")
 
-        plt.plot(np.linspace(0, time_elapsed, len(J_values)), J_values, 
-            linestyle='-', marker=markers[i], markersize=10, linewidth=2, color=colors[i], label=labels[i])        
+        plt.plot(np.linspace(0, time_elapsed, opt_steps)[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
+            linestyle='-', marker=markers[i], markersize=8, linewidth=2, color=colors[i], label=labels[i])        
 
-        plt.xlabel(f"Execution time [s]", fontsize=20)
-        plt.ylabel("Objective value", fontsize=20)
-        plt.tick_params(labelsize=20)
-        plt.tick_params(labelsize=20)
-        plt.legend(fontsize=20, frameon=False)   
+    plt.xlabel(f"Execution time [s]", fontsize=18)
+    plt.ylabel(r"Objective value [m$^5$]", fontsize=18)
+    plt.tick_params(labelsize=18)
+    plt.tick_params(labelsize=18)
+    plt.legend(fontsize=18, frameon=False)   
 
     plt.savefig(os.path.join(inv_pdf_dir, f'obj.pdf'), bbox_inches='tight')
+
+
+    fig = plt.figure(figsize=(8, 6)) 
+    x_pos, traction = np.load(os.path.join(fwd_numpy_dir, f'traction.npy'))
+    plt.plot(np.mean(x_pos, -1), np.mean(traction, -1)/1e6, color='black', linestyle='-', linewidth=2, label='Rreference')
+
+    opt_steps_cg_ad = num_opt_steps[0]
+
+    steps = [0, 1, 2, 6]
+    colors = ['blue', 'green', 'orange', 'red']
+    labels = ['(I)', '(II)', '(III)', '(IV)']
+
+    for i, step in enumerate(steps):
+        traction = np.load(os.path.join(inv_numpy_dir, f'traction_{step:05d}.npy'))
+        plt.plot(np.mean(x_pos, -1), np.mean(traction, -1)/1e6, color=colors[i], linestyle='none', 
+            marker='o', markersize=8, label=labels[i])
+
+    plt.xlabel(f"Physical coordinate (x-direction) [m]", fontsize=18)
+    plt.ylabel(f"Traction force [MPa]", fontsize=18)
+    plt.tick_params(labelsize=18)
+    plt.tick_params(labelsize=18)
+    plt.legend(fontsize=18, frameon=False)
+    plt.savefig(os.path.join(inv_pdf_dir, f'traction.pdf'), bbox_inches='tight')
+
     plt.show()
 
+
 if __name__=="__main__":
-    workflow()
+    # workflow()
     generate_figures()
-    # visualize_traction('inverse', [i for i in range(6)])
+
