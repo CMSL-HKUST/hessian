@@ -14,7 +14,7 @@ This repository has two purposes:
 ## General picture
 
 <p align="middle">
-  <img src="images/differentiable_programming.pdf" width="800" />
+  <img src="images/differentiable_programming.png" width="800" />
 </p>
 <p align="middle">
     <em >Differentiable programming breaks the boundary between deep learning and differentiable physics.</em>
@@ -40,7 +40,7 @@ Works with [JAX-FEM](https://github.com/deepmodeling/jax-fem) version 0.0.9.
 *Goal: Change the source term to match observed data.*
 
 <p align="middle">
-  <img src="images/example_poisson_inv.pdf" width="600" />
+  <img src="images/example_poisson_inv.png" width="600" />
 </p>
 <p align="middle">
     <em >Predicted solutions gradually match the reference data.</em>
@@ -53,7 +53,7 @@ Works with [JAX-FEM](https://github.com/deepmodeling/jax-fem) version 0.0.9.
 
 
 <p align="middle">
-  <img src="images/example_hyperelasticity_inv.pdf" width="600" />
+  <img src="images/example_hyperelasticity_inv.png" width="600" />
 </p>
 <p align="middle">
     <em >Predicted displacements gradually match the reference displacement.</em>
@@ -65,7 +65,7 @@ Works with [JAX-FEM](https://github.com/deepmodeling/jax-fem) version 0.0.9.
 *Goal: Change the boundary temperature to achieve desired deformation.*
 
 <p align="middle">
-  <img src="images/example_thermal_mechanical_inv.pdf" width="600" />
+  <img src="images/example_thermal_mechanical_inv.png" width="600" />
 </p>
 <p align="middle">
     <em >Predicted displacements gradually match the reference displacement.</em>
@@ -76,7 +76,7 @@ Works with [JAX-FEM](https://github.com/deepmodeling/jax-fem) version 0.0.9.
 *Goal: Rotate the square-shaped holes for better beam stiffness.*
 
 <p align="middle">
-  <img src="images/example_shape_opt.pdf" width="600" />
+  <img src="images/example_shape_opt.png" width="600" />
 </p>
 <p align="middle">
     <em >Predicted displacements gradually match the reference displacement.</em>
