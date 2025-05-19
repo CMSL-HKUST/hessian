@@ -79,7 +79,7 @@ Works with [JAX-FEM](https://github.com/deepmodeling/jax-fem) version 0.0.9.
   <img src="images/example_shape_opt.png" width="600" />
 </p>
 <p align="middle">
-    <em >Predicted displacements gradually match the reference displacement.</em>
+    <em >Compliance minimization by changing orientations of the square holes.</em>
 </p>
 
 
