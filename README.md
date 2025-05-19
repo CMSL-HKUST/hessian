@@ -25,7 +25,7 @@ This repository is based on [JAX-FEM](https://github.com/deepmodeling/jax-fem) t
 
 ## Quick start
 
-Refer to `simple.ipynb` for a simple illustrative example.
+Refer to [`simple.ipynb`](https://github.com/tianjuxue/hessian/blob/main/simple.ipynb) for a simple illustrative example.
 
 
 ## Installation
