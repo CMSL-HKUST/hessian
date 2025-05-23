@@ -85,9 +85,13 @@ Works with [JAX-FEM](https://github.com/deepmodeling/jax-fem) version 0.0.9.
 
 ## Paper
 
-Refer to the arXiv version.
+Refer to the arXiv version for more details.
 
-## Citations
-
-If you found this library useful in academic or industry work, we appreciate your support if you consider 1) starring the project on Github, and 2) citing relevant papers.
-
+```bibtex
+@article{xue2025implicit,
+  title={Implicit differentiation with second-order derivatives and benchmarks in finite-element-based differentiable physics},
+  author={Xue, Tianju},
+  journal={arXiv preprint arXiv:2505.12646},
+  year={2025}
+}
+```
