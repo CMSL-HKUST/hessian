@@ -63,14 +63,14 @@ class Poisson(Problem):
 class HessVecProductPoisson(HessVecProduct):
     def callback(self, θ_flat):
         logger.info(f"########################## hess_vec_prod.callback is called for optimization step {self.opt_step} ...")
-        self.opt_step += 1
-
         if not self.timing_flag:
+            print(f"solution size = {self.u_to_save[0].size}, parameter size = {θ_flat.size}")
             self.J_values.append(self.J_value)
             if self.opt_flag == 'cg_ad':
                 inv_vtk_dir, = self.args
-                save_sol(self.problem.fes[0], self.u_to_save[0], os.path.join(inv_vtk_dir, f'u_{self.opt_step:05d}.vtu'),
-                    cell_infos=[('θ', np.mean(self.unflatten(θ_flat), axis=-1))])
+                # save_sol(self.problem.fes[0], self.u_to_save[0], os.path.join(inv_vtk_dir, f'u_{self.opt_step:05d}.vtu'),
+                #     cell_infos=[('θ', np.mean(self.unflatten(θ_flat), axis=-1))])
+        self.opt_step += 1
 
 
 def workflow():
@@ -108,7 +108,7 @@ def workflow():
     # (num_cells, num_quads, dim)
     quad_points = problem.fes[0].get_physical_quad_points()
 
-    run_forward_flag = True
+    run_forward_flag = False
     if run_forward_flag:
         files = glob.glob(os.path.join(fwd_vtk_dir, f'*')) + glob.glob(os.path.join(fwd_numpy_dir, f'*'))
         for f in files:
@@ -136,40 +136,44 @@ def workflow():
 
         θ_ini = 1*np.ones_like(quad_points)[:, :, 0]
         u_ini = fwd_pred(θ_ini)
-        save_sol(problem.fes[0], u_ini[0], os.path.join(inv_vtk_dir, f'u_{0:05d}.vtu'), cell_infos=[('θ', np.mean(θ_ini, axis=-1))])
+        # save_sol(problem.fes[0], u_ini[0], os.path.join(inv_vtk_dir, f'u_{0:05d}.vtu'), cell_infos=[('θ', np.mean(θ_ini, axis=-1))])
 
-        opt_flags = ['cg_ad', 'bgfs'] # ['cg_ad', 'cg_fd', 'bgfs']
+        opt_flags = ['cg_ad'] # ['cg_ad', 'cg_fd', 'bgfs']
         for opt_flag in opt_flags:
             hess_vec_prod = HessVecProductPoisson(problem, J_fn, θ_ini, {}, {}, inv_vtk_dir)
             hess_vec_prod.timing_flag = False
             hess_vec_prod.opt_flag = opt_flag
             if opt_flag == 'cg_ad':
-                result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
+                # for recording memory only: maxiter = 5 - 1
+                result, time_elapsed, peak_memory = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
                     method='newton-cg', jac=hess_vec_prod.grad, hessp=hess_vec_prod.hessp, 
                     callback=hess_vec_prod.callback, options={'maxiter': 5, 'xtol': 1e-20}) # gtol and ftol not applicable
             elif opt_flag == 'cg_fd':
                 # Does not converge
-                result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
+                result, time_elapsed, peak_memory = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
                     method='newton-cg', jac=hess_vec_prod.grad, 
                     callback=hess_vec_prod.callback, options={'maxiter': 5, 'xtol': 1e-20})
             else:
-                result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
+                result, time_elapsed, peak_memory = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
                     method='L-BFGS-B', jac=hess_vec_prod.grad, 
                     callback=hess_vec_prod.callback, options={'maxiter': 20, 'disp': True, 'gtol': 1e-20, 'xtol': 1e-30}) 
-            postprocess_results(hess_vec_prod, result, time_elapsed)                
+            postprocess_results(hess_vec_prod, result, time_elapsed, peak_memory)                
 
 
-def postprocess_results(hess_vec_prod, result, time_elapsed):
+def postprocess_results(hess_vec_prod, result, time_elapsed, peak_memory):
     print(result)
     print(f"Time elapsed is {time_elapsed}")
     print(f"J_values = {hess_vec_prod.J_values}")
+    print(f"len(J_values) = {len(hess_vec_prod.J_values)}") 
     print(f"More information: {hess_vec_prod.counter}")  
-    if hess_vec_prod.timing_flag:
-        np.save(os.path.join(inv_numpy_dir, f'time_{hess_vec_prod.opt_flag}.npy'), time_elapsed)
-    else:
-        # num_J, num_grad, num_hessp_full, num_hessp_cached 
-        np.save(os.path.join(inv_numpy_dir, f'opt_info_{hess_vec_prod.opt_flag}.npy'), np.array(list(hess_vec_prod.counter.values())))
-        np.save(os.path.join(inv_numpy_dir, f'obj_{hess_vec_prod.opt_flag}.npy'), hess_vec_prod.J_values)
+    print(f"Peak memory: {peak_memory} MiB")
+
+    # if hess_vec_prod.timing_flag:
+    #     np.save(os.path.join(inv_numpy_dir, f'time_{hess_vec_prod.opt_flag}.npy'), time_elapsed)
+    # else:
+    #     # num_J, num_grad, num_hessp_full, num_hessp_cached 
+    #     np.save(os.path.join(inv_numpy_dir, f'opt_info_{hess_vec_prod.opt_flag}.npy'), np.array(list(hess_vec_prod.counter.values())))
+    #     np.save(os.path.join(inv_numpy_dir, f'obj_{hess_vec_prod.opt_flag}.npy'), hess_vec_prod.J_values)
 
 
 def generate_figures():
@@ -187,22 +191,27 @@ def generate_figures():
         J_values = np.load(os.path.join(inv_numpy_dir, f'obj_{opt_flag}.npy'))
         opt_steps = len(J_values)
 
+        total_time = np.linspace(0, time_elapsed, opt_steps)
         print(f"\nopt_flag = {opt_flag}")
-        print(f"Time elapsed is {time_elapsed}")
+        print(f"iteration steps = {opt_steps - drops[i]}")
         print(f"J_values = {J_values}")
         print(f"num_J = {num_J}, num_grad = {num_grad}, num_hessp_full = {num_hessp_full}, num_hessp_cached = {num_hessp_cached}")
+        print(f"Time elapsed is {total_time[opt_steps - drops[i] - 1]}")
         print(f"Final value for obj = {J_values[opt_steps - drops[i] - 1]}")
 
-        plt.plot(np.linspace(0, time_elapsed, opt_steps)[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
+        plt.plot(total_time[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
             linestyle='-', marker=markers[i], markersize=8, linewidth=2, color=colors[i], label=labels[i])        
 
-        plt.xlabel(f"Execution time [s]", fontsize=16)
-        plt.ylabel("Objective value", fontsize=16)
-        plt.tick_params(labelsize=16)
-        plt.tick_params(labelsize=16)
-        plt.legend(fontsize=16, frameon=False)   
+    plt.xlabel(f"Execution time [s]", fontsize=16)
+    plt.ylabel("Objective value", fontsize=16)
+    plt.tick_params(labelsize=16)
+    plt.tick_params(labelsize=16)
+    plt.legend(fontsize=16, frameon=False)   
 
-    plt.savefig(os.path.join(inv_pdf_dir, f'obj.pdf'), bbox_inches='tight')
+    # plt.xscale('log')
+    plt.yscale('log')
+
+    plt.savefig(os.path.join(inv_pdf_dir, f'obj_y-log.pdf'), bbox_inches='tight')
     # plt.show()
 
 

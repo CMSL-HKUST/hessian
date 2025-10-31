@@ -43,6 +43,12 @@ inv_pdf_dir = os.path.join(output_dir, 'inverse/pdf')
 input_dir = os.path.join(os.path.dirname(__file__), f'input')
 fwd_mesh_dir = os.path.join(input_dir, 'forward/mesh')
 
+
+CPC_revision_dir = os.path.join(output_dir, 'CPC_revision')
+CPC_q5_dir = os.path.join(CPC_revision_dir, 'q5')
+
+os.makedirs(CPC_q5_dir, exist_ok=True)
+
 os.makedirs(fwd_numpy_dir, exist_ok=True)
 os.makedirs(inv_numpy_dir, exist_ok=True)
 os.makedirs(inv_pdf_dir, exist_ok=True)
@@ -126,9 +132,9 @@ class HessVecProductThermalMechanical(HessVecProduct):
     def callback(self, θ_flat):
         logger.info(f"########################## hess_vec_prod.callback is called for optimization step {self.opt_step} ...")
         logger.info(f"params = {θ_flat}")
-        self.opt_step += 1
 
         if not self.timing_flag:
+            print(f"solution size = {self.u_to_save[0].size + self.u_to_save[1].size}, parameter size = {θ_flat.size}")
             self.J_values.append(self.J_value)
             if self.opt_flag == 'cg_ad':
                 inv_vtk_dir, J_fn_reg, sorted_indices = self.args
@@ -136,12 +142,17 @@ class HessVecProductThermalMechanical(HessVecProduct):
                 print(f"Regularization = {J_fn_reg(θ)}")
                 disp_save = np.hstack((self.u_to_save[0], np.zeros((len(self.cached_vars['u'][0]), 1))))
                 T_save = self.u_to_save[1]
-                save_sol(self.problem.fes[0], disp_save, os.path.join(inv_vtk_dir, f'sol_{self.opt_step:05d}.vtu'), 
-                    point_infos=[('T', T_save)])
-                np.save(os.path.join(inv_numpy_dir, f'temperature_{self.opt_step:05d}.npy'), θ_flat[sorted_indices])
+                # save_sol(self.problem.fes[0], disp_save, os.path.join(inv_vtk_dir, f'sol_{self.opt_step:05d}.vtu'), 
+                #     point_infos=[('T', T_save)])
+                # np.save(os.path.join(inv_numpy_dir, f'temperature_{self.opt_step:05d}.npy'), θ_flat[sorted_indices])
+
+                # Just for CPC revision Q5
+                np.save(os.path.join(CPC_q5_dir, f'temperature_{self.alpha}_{self.opt_step:05d}.npy'), θ_flat[sorted_indices])
+        
+        self.opt_step += 1
 
 
-def workflow():
+def workflow(alpha=1.):
     meshio_mesh = meshio.read(os.path.join(fwd_mesh_dir, 'theta_0.vtu'))
     ele_type = 'TRI3'
     cell_type = get_meshio_cell_type(ele_type)
@@ -207,7 +218,7 @@ def workflow():
         corner_disp_ref = u_true[0][corner_node_id]
         print(f'disp of corner = {corner_disp_ref}')
 
-    run_inverse_flag = False
+    run_inverse_flag = True
     if run_inverse_flag:
         files = glob.glob(os.path.join(inv_vtk_dir, f'*')) 
         for f in files:
@@ -218,7 +229,7 @@ def workflow():
             reg_term = np.sum(np.diff(θ_sorted)**2)
             reg_l1 = np.sum(np.abs(np.diff(θ_sorted))) # Total variation
             reg_l2 = np.sum(np.diff(θ_sorted)**2) # Tikhonov
-            return 1*reg_term
+            return alpha*reg_term
 
         def J_fn(u, θ):
             u_pred = u
@@ -229,48 +240,87 @@ def workflow():
  
         θ_ini = 100.*np.ones(num_hole_boundary_nodes)
         u_ini = fwd_pred(θ_ini)
-        save_sol(problem.fes[0], np.hstack((u_ini[0], np.zeros((len(u_ini[0]), 1)))), 
-            os.path.join(inv_vtk_dir, f'sol_{0:05d}.vtu'), point_infos=[('T', u_ini[1])])
-        np.save(os.path.join(inv_numpy_dir, f'temperature_{0:05d}.npy'), θ_ini[sorted_indices])
+        # save_sol(problem.fes[0], np.hstack((u_ini[0], np.zeros((len(u_ini[0]), 1)))), 
+        #     os.path.join(inv_vtk_dir, f'sol_{0:05d}.vtu'), point_infos=[('T', u_ini[1])])
+        # np.save(os.path.join(inv_numpy_dir, f'temperature_{0:05d}.npy'), θ_ini[sorted_indices])
+
+        # Just for CPC revision Q5
+        np.save(os.path.join(CPC_q5_dir, f'temperature_{alpha}_{0:05d}.npy'), θ_ini[sorted_indices])
 
         # opt_flags = ['cg_ad', 'cg_fd', 'bgfs']
         opt_flags = ['cg_ad']
         for opt_flag in opt_flags:
-            option_petsc = {'petsc_solver': {'ksp_type': 'tfqmr', 'pc_type': 'lu'}}
+            # option_petsc = {'petsc_solver': {'ksp_type': 'tfqmr', 'pc_type': 'lu'}}
             option_umfpack = {'umfpack_solver': {}}        
             hess_vec_prod = HessVecProductThermalMechanical(problem, J_fn, θ_ini, option_umfpack, 
                 option_umfpack, inv_vtk_dir, J_fn_reg, sorted_indices)
             hess_vec_prod.timing_flag = False
             hess_vec_prod.opt_flag = opt_flag
+            hess_vec_prod.alpha = alpha
             if opt_flag == 'cg_ad':
-                result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
+                result, time_elapsed, peak_memory = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
                     method='newton-cg', jac=hess_vec_prod.grad, hessp=hess_vec_prod.hessp, 
                     callback=hess_vec_prod.callback, options={'maxiter': 6, 'xtol': 1e-20}) # gtol and ftol not applicable
             elif opt_flag == 'cg_fd':
-                result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
+                result, time_elapsed, peak_memory = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
                     method='newton-cg', jac=hess_vec_prod.grad, 
                     callback=hess_vec_prod.callback, options={'maxiter': 6, 'xtol': 1e-20})
             else:
-                result, time_elapsed = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
+                result, time_elapsed, peak_memory = timing_wrapper(minimize)(fun=hess_vec_prod.J, x0=hess_vec_prod.θ_ini_flat, 
                     method='L-BFGS-B', jac=hess_vec_prod.grad, 
                     callback=hess_vec_prod.callback, options={'maxiter': 30, 'disp': True, 'gtol': 1e-20, 'xtol': 1e-30}) 
-            postprocess_results(hess_vec_prod, result, time_elapsed) 
+            postprocess_results(hess_vec_prod, result, time_elapsed, peak_memory) 
 
             print(f"Final corner disp = {fwd_pred(hess_vec_prod.unflatten(result.x))[0][corner_node_id]}")
 
 
-def postprocess_results(hess_vec_prod, result, time_elapsed):
+def postprocess_results(hess_vec_prod, result, time_elapsed, peak_memory):
     print(result)
     print(f"Time elapsed is {time_elapsed}")
     print(f"J_values = {hess_vec_prod.J_values}")
+    print(f"len(J_values) = {len(hess_vec_prod.J_values)}") 
     print(f"More information: {hess_vec_prod.counter}")  
-    if hess_vec_prod.timing_flag:
-        np.save(os.path.join(inv_numpy_dir, f'time_{hess_vec_prod.opt_flag}.npy'), time_elapsed)
-    else:
-        # num_J, num_grad, num_hessp_full, num_hessp_cached 
-        np.save(os.path.join(inv_numpy_dir, f'opt_info_{hess_vec_prod.opt_flag}.npy'), np.array(list(hess_vec_prod.counter.values())))
-        np.save(os.path.join(inv_numpy_dir, f'obj_{hess_vec_prod.opt_flag}.npy'), hess_vec_prod.J_values)
+    print(f"Peak memory: {peak_memory} MiB")
 
+    # if hess_vec_prod.timing_flag:
+    #     np.save(os.path.join(inv_numpy_dir, f'time_{hess_vec_prod.opt_flag}.npy'), time_elapsed)
+    # else:
+    #     # num_J, num_grad, num_hessp_full, num_hessp_cached 
+    #     np.save(os.path.join(inv_numpy_dir, f'opt_info_{hess_vec_prod.opt_flag}.npy'), np.array(list(hess_vec_prod.counter.values())))
+    #     np.save(os.path.join(inv_numpy_dir, f'obj_{hess_vec_prod.opt_flag}.npy'), hess_vec_prod.J_values)
+
+
+def regularity_term_CPC_revision():
+    # Compute
+    # 7,7,6,5
+    # 6,6,6,37
+    # 7,7,6,19
+    # alphas = [1e-10, 1e-5, 1.0]
+    # for alpha in alphas:
+    #     print(f"alpha = {alpha}")
+    #     workflow(alpha)
+
+    # Make figures
+    alphas = [1e-10, 1e-5, 1.0]
+    fig = plt.figure(figsize=(8, 6)) 
+    for i, alpha in enumerate(alphas):
+        print(f"alpha = {alpha}")
+        angles = np.load(os.path.join(fwd_numpy_dir, f'angles.npy'))
+        colors = ['black', 'blue', 'red']
+        labels = [r'$\alpha=10^{-20}$', r'$\alpha=10^{-15}$', r'$\alpha=10^{-10}$']
+        markers = ['s', '^', 'o']
+        step = 6
+        temperature = np.load(os.path.join(CPC_q5_dir, f'temperature_{alpha}_{step:05d}.npy'))
+        plt.plot(angles, temperature, color=colors[i], linestyle='-', linewidth=2,  marker=markers[i], markersize=8, label=labels[i])
+
+        plt.xlabel(f"Angle", fontsize=18)
+        plt.ylabel(f"Temperature change [K]", fontsize=18)
+        plt.tick_params(labelsize=18)
+        plt.tick_params(labelsize=18)
+        plt.legend(fontsize=18, frameon=False)
+        plt.savefig(os.path.join(CPC_q5_dir, f'sensitivity_sweep.pdf'), bbox_inches='tight')
+
+    plt.show()
 
 def generate_figures():
     opt_flags = ['cg_ad', 'cg_fd', 'bgfs']
@@ -289,29 +339,32 @@ def generate_figures():
         J_values = J_values/1e10
         opt_steps = len(J_values)
         num_opt_steps.append(opt_steps)
-
+ 
+        total_time = np.linspace(0, time_elapsed, opt_steps)
         print(f"\nopt_flag = {opt_flag}")
-        print(f"Time elapsed is {time_elapsed}")
+        print(f"iteration steps = {opt_steps - drops[i]}")
         print(f"J_values = {J_values}")
         print(f"num_J = {num_J}, num_grad = {num_grad}, num_hessp_full = {num_hessp_full}, num_hessp_cached = {num_hessp_cached}")
+        print(f"Time elapsed is {total_time[opt_steps - drops[i] - 1]}")
         print(f"Final value for obj = {J_values[opt_steps - drops[i] - 1]}")
 
-        plt.plot(np.linspace(0, time_elapsed, opt_steps)[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
+        plt.plot(total_time[:opt_steps - drops[i]], J_values[:opt_steps - drops[i]], 
             linestyle='-', marker=markers[i], markersize=8, linewidth=2, color=colors[i], label=labels[i])        
 
-        plt.xlabel(f"Execution time [s]", fontsize=18)
-        plt.ylabel(r"Objective value [m$^2$]", fontsize=18)
-        plt.tick_params(labelsize=18)
-        plt.tick_params(labelsize=18)
-        plt.legend(fontsize=18, frameon=False)   
+    plt.xlabel(f"Execution time [s]", fontsize=18)
+    plt.ylabel(r"Objective value [m$^2$]", fontsize=18)
+    plt.tick_params(labelsize=18)
+    plt.tick_params(labelsize=18)
+    plt.legend(fontsize=18, frameon=False)   
 
-    plt.savefig(os.path.join(inv_pdf_dir, f'obj.pdf'), bbox_inches='tight')
+    # plt.xscale('log')
+    plt.yscale('log')
+
+    plt.savefig(os.path.join(inv_pdf_dir, f'obj_y-log.pdf'), bbox_inches='tight')
 
 
     fig = plt.figure(figsize=(8, 6)) 
     angles = np.load(os.path.join(fwd_numpy_dir, f'angles.npy'))
-
-    opt_steps_cg_ad = num_opt_steps[0]
 
     steps = [0, 1, 2, 6]
     colors = ['blue', 'green', 'orange', 'red']
@@ -326,11 +379,12 @@ def generate_figures():
     plt.tick_params(labelsize=18)
     plt.tick_params(labelsize=18)
     plt.legend(fontsize=18, frameon=False)
-    plt.savefig(os.path.join(inv_pdf_dir, f'temperature.pdf'), bbox_inches='tight')
+    # plt.savefig(os.path.join(inv_pdf_dir, f'temperature.pdf'), bbox_inches='tight')
 
-    plt.show()
+    # plt.show()
 
 
 if __name__=="__main__":
-    workflow()
-    # generate_figures()
+    # workflow()
+    generate_figures()
+    # regularity_term_CPC_revision()

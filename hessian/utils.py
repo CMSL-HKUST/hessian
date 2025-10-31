@@ -2,6 +2,7 @@ import jax
 import jax.numpy as np
 import jax.flatten_util
 import time
+from memory_profiler import memory_usage
 
 
 def tree_l2_norm_error(θ1, θ2):
@@ -19,7 +20,8 @@ def compute_l2_norm_error(problem, sol_list_pred, sol_list_true):
 def timing_wrapper(func):
     def wrapper(*args, **kwargs):
         start_time = time.perf_counter()
-        result = func(*args, **kwargs)
+        # result = func(*args, **kwargs)
+        peak_memory, result = memory_usage((func, args, kwargs), max_usage=True, retval=True)
         time_elapsed = time.perf_counter() - start_time
-        return result, time_elapsed
+        return result, time_elapsed, peak_memory
     return wrapper

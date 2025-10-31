@@ -1,13 +1,17 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+
 import numpy as onp
 import jax
 import jax.numpy as np
-import os
+
 import glob
 import logging
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import sys
 import time
+from memory_profiler import memory_usage
  
 # Import JAX-FEM specific modules.
 from jax_fem.problem import Problem
@@ -16,8 +20,11 @@ from jax_fem.utils import save_sol
 from jax_fem.generate_mesh import get_meshio_cell_type, Mesh, rectangle_mesh
 from jax_fem import logger
 
-from hessian.manager import HessVecProduct
+from hessian.manager import HessVecProduct, central_finite_difference_hessp
 from hessian.utils import compute_l2_norm_error
+
+platform = jax.lib.xla_bridge.get_backend().platform
+print(f"platform = {platform}")
 
 
 onp.set_printoptions(threshold=sys.maxsize,
@@ -33,7 +40,7 @@ plt.rcParams.update({
     "font.sans-serif": ["Helvetica"]})
 
 
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 data_dir = os.path.join(os.path.dirname(__file__), f'output')
 fwd_vtk_dir = os.path.join(data_dir, 'forward/vtk')
@@ -42,6 +49,13 @@ val_numpy_dir = os.path.join(data_dir, 'inverse/validation/numpy')
 val_pdf_dir = os.path.join(data_dir, 'inverse/validation/pdf')
 prof_numpy_dir = os.path.join(data_dir, 'inverse/profiling/numpy')
 prof_pdf_dir = os.path.join(data_dir, 'inverse/profiling/pdf')
+
+
+CPC_revision_dir = os.path.join(data_dir, 'CPC_revision')
+CPC_q1_dir = os.path.join(CPC_revision_dir, 'q1')
+os.makedirs(CPC_q1_dir, exist_ok=True)
+CPC_q236_dir = os.path.join(CPC_revision_dir, 'q236')
+os.makedirs(CPC_q236_dir, exist_ok=True)
 
 
 class NonlinearPoisson(Problem):
@@ -127,21 +141,12 @@ def profile_hessp(hess_vec_prod):
     np.save(os.path.join(prof_numpy_dir, f'profile_results_{time.perf_counter_ns()}.npy'), profile_results)
 
 
-def finite_difference_hessp(hess_vec_prod, θ_flat, θ_hat_flat, h):
-    θ_minus_flat = θ_flat - h*θ_hat_flat
-    θ_plus_flat  = θ_flat + h*θ_hat_flat
-    value_plus = hess_vec_prod.grad(θ_plus_flat)
-    value_minus = hess_vec_prod.grad(θ_minus_flat)
-    dθ_dθ_J_θ_hat = jax.tree_util.tree_map(lambda x, y: (x - y)/(2*h), value_plus, value_minus)
-    return dθ_dθ_J_θ_hat
-
-
 def hessian_validation(hess_vec_prod, h, seed_1=1, seed_2=2, seed_3=3):
     θ_flat = jax.random.normal(jax.random.key(seed_1), hess_vec_prod.θ_ini_flat.shape)
     θ_hat_flat = jax.random.normal(jax.random.key(seed_2), hess_vec_prod.θ_ini_flat.shape)
     θ_tilde_flat = jax.random.normal(jax.random.key(seed_3), hess_vec_prod.θ_ini_flat.shape)
     hess_v_ad = hess_vec_prod.hessp(θ_flat, θ_hat_flat)
-    hess_v_fd = finite_difference_hessp(hess_vec_prod, θ_flat, θ_hat_flat, h)
+    hess_v_fd = central_finite_difference_hessp(hess_vec_prod, θ_flat, θ_hat_flat, h)
     hess_v_ad_flat = jax.flatten_util.ravel_pytree(hess_v_ad)[0]
     hess_v_fd_flat = jax.flatten_util.ravel_pytree(hess_v_fd)[0]
     v_hess_v_ad = np.dot(θ_tilde_flat, hess_v_ad_flat)
@@ -172,11 +177,13 @@ def taylor_remainder_test(hess_vec_prod, h, seed_1=1, seed_2=2):
     return f_plus_val, f_val, v_f_grad, v_hess_v
 
 
-def workflow():
+def workflow(N=64, q236_num_seeds=100):
     ele_type = 'QUAD4'
     cell_type = get_meshio_cell_type(ele_type)
     Lx, Ly = 1., 1.
-    meshio_mesh = rectangle_mesh(Nx=64, Ny=64, domain_x=Lx, domain_y=Ly)
+
+
+    meshio_mesh = rectangle_mesh(Nx=N, Ny=N, domain_x=Lx, domain_y=Ly)
     mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict[cell_type])
 
     def left(point):
@@ -205,12 +212,13 @@ def workflow():
 
     location_fns = [bottom, top]
     problem = NonlinearPoisson(mesh=mesh, vec=1, dim=2, ele_type=ele_type, dirichlet_bc_info=dirichlet_bc_info, location_fns=location_fns)
-    fwd_pred = ad_wrapper(problem) 
+    option_umfpack = {'umfpack_solver': {}}
+    fwd_pred = ad_wrapper(problem, solver_options=option_umfpack, adjoint_solver_options=option_umfpack) 
 
     # (num_cells, num_quads, dim)
     quad_points = problem.fes[0].get_physical_quad_points()
 
-    run_forward_flag = True
+    run_forward_flag = False
     if run_forward_flag:
         files = glob.glob(os.path.join(fwd_vtk_dir, f'*')) + glob.glob(os.path.join(fwd_numpy_dir, f'*'))
         for f in files:
@@ -232,7 +240,6 @@ def workflow():
             return l2_u**2
 
         theta_ini = np.zeros_like(quad_points)[:, :, 0]
-        option_umfpack = {'umfpack_solver': {}}
         hess_vec_prod = HessVecProduct(problem, J_fn, theta_ini, option_umfpack, option_umfpack, None)
 
         run_profiling_flag = True
@@ -248,6 +255,8 @@ def workflow():
             hessp_options = ['fwd_rev', 'rev_fwd', 'rev_rev']
             for index, hessp_option in enumerate(hessp_options):
                 hess_vec_prod.hessp_option = hessp_option
+
+                # Do we need this line?
                 hessian_validation(hess_vec_prod, h=1e-3)
 
                 hs = [1e-1, 1e-2, 1e-3, 1e-4]
@@ -275,6 +284,279 @@ def workflow():
 
                 vHv_results = np.array(vHv_results)
                 np.save(os.path.join(val_numpy_dir, f'vHv_results_{hessp_option}.npy'), vHv_results)
+
+    run_CPC_flag = True
+    if run_CPC_flag:
+        sol_list_true = [np.load(os.path.join(fwd_numpy_dir, f'u.npy'))]
+        def J_fn(u, θ):
+            sol_list_pred = u
+            l2_u = compute_l2_norm_error(problem, sol_list_pred, sol_list_true)
+            return l2_u**2
+
+        theta_ini = np.zeros_like(quad_points)[:, :, 0]
+        hess_vec_prod = HessVecProduct(problem, J_fn, theta_ini, option_umfpack, option_umfpack, None)
+        hessp_option = 'rev_fwd'
+        hess_vec_prod.hessp_option = hessp_option
+
+        run_q1_flag = False
+        if run_q1_flag:
+            # files = glob.glob(os.path.join(CPC_q1_dir, f'*')) 
+            # for f in files:
+            #     os.remove(f)
+
+            hs = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+            num_seeds = 50
+            seed_results = []
+            for i in range(num_seeds):  
+                print(f"\n\n######################## i = {i}, num_seeds = {num_seeds}")
+                seed_results.append([])
+                for h in hs:
+                    f_plus_val, f_val, v_f_grad, v_hess_v = taylor_remainder_test(hess_vec_prod, h, seed_1=1, seed_2=2+i)
+                    seed_results[-1].append([h, f_plus_val, f_val, v_f_grad, v_hess_v])
+
+            seed_results = np.array(seed_results)
+            np.save(os.path.join(CPC_q1_dir, f'seed_results_{hessp_option}.npy'), seed_results)
+
+        run_q236_flag = True
+        if run_q236_flag:
+            num_seeds = q236_num_seeds
+            time_profile_results = []
+            θ_flat = jax.random.normal(jax.random.key(1), hess_vec_prod.θ_ini_flat.shape)
+
+            for i in range(num_seeds):  
+                print(f"\n\n######################## i = {i}, num_seeds = {num_seeds}")
+                θ_hat_flat = jax.random.normal(jax.random.key(2 + i), hess_vec_prod.θ_ini_flat.shape)
+                hess_vec_prod.hessp(θ_flat, θ_hat_flat)
+                timer = np.diff(np.array(hess_vec_prod.timer))
+                profile_info = np.array(hess_vec_prod.profile_info)
+                print(f"timer = {timer}")
+                print(f"profile_info = {profile_info}")
+                # timer: 5 time intervals for the 5 steps in Hessian-vector products
+                # profile_info: J and F time in Step 4
+                time_profile_results.append(np.hstack((timer, profile_info)))
+
+            time_profile_results = np.array(time_profile_results)
+            print(f"time_profile_results.shape = {time_profile_results.shape}")
+            np.save(os.path.join(CPC_q236_dir, f'time_profile_N_{N:05d}_seed_{q236_num_seeds}_{platform}.npy'), time_profile_results)
+
+
+def size_test_CPC_revision():
+    run_q236_flag = False
+    if run_q236_flag:
+        # q2
+        # N = 256
+        # q236_num_seeds = 101
+        # peak_memory = memory_usage((workflow, (N, q236_num_seeds), {}), max_usage=True)
+        # print(f"Peak memory: {peak_memory} MiB")
+        # np.save(os.path.join(CPC_q236_dir, f'memory_profile_N_{N:05d}_seed_{q236_num_seeds}_{platform}.npy'), peak_memory)
+
+        # q3 and q6
+        Ns = [64, 128, 256, 512, 1024]
+        Ns = [64]
+        q236_num_seeds = 4
+        for N in Ns:
+            print(f"\n\n########################## N = {N}")
+            peak_memory = memory_usage((workflow, (N, q236_num_seeds), {}), max_usage=True)
+            print(f"Peak memory: {peak_memory} MiB")
+            np.save(os.path.join(CPC_q236_dir, f'memory_profile_N_{N:05d}_seed_{q236_num_seeds}_{platform}.npy'), peak_memory)
+     
+    figures_q2_flag = False
+    if figures_q2_flag: 
+        # q2
+        N = 64
+        q236_num_seeds = 101
+        time_profile_results = np.load(os.path.join(CPC_q236_dir, f'time_profile_N_{N:05d}_seed_{q236_num_seeds}_{platform}.npy'))
+        print(f"Total time for the first call is {np.sum(time_profile_results[0, :5])}")
+        print(f"Avg time for the steady call is {np.mean(np.sum(time_profile_results[1:, :5], axis=1))}")
+
+        plt.figure(figsize=(10, 10))
+        plt.plot(np.arange(5) + 1, time_profile_results[0][:5], linestyle='-', linewidth=1, 
+            marker='o', markersize=8, color='blue', label="First call")
+   
+        for i in range(q236_num_seeds - 1):
+            if i == 0:
+                plt.plot(np.arange(5) + 1, time_profile_results[i + 1][:5], linestyle='-', linewidth=1, 
+                    marker='o', markersize=8, color='black', label="Steady-state calls")
+            else:
+                plt.plot(np.arange(5) + 1, time_profile_results[i + 1][:5], linestyle='-', linewidth=1, 
+                    marker='o', markersize=8, color='black')
+
+        x_positions = np.arange(5) + 1  # [1, 2, 3, 4, 5]
+        x_labels = ['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5']
+        plt.xticks(ticks=x_positions, labels=x_labels)
+        # plt.xlabel(r"Hessian-vector product step", fontsize=20)
+        plt.ylabel("Time [s]", fontsize=20)
+        plt.tick_params(labelsize=20)
+        plt.legend(fontsize=20, frameon=False)
+        plt.savefig(os.path.join(CPC_q236_dir, f'q2_time_profile_N_{N:05d}.pdf'), bbox_inches='tight')
+
+    figures_q3_flag = False
+    if figures_q3_flag: 
+        # q3
+        q236_num_seeds = 4
+        Ns = np.array([64, 128, 256, 512, 1024])
+
+        first_call_time = []
+        steady_call_time = []
+        peak_memories = []
+
+        for N in Ns:
+            time_profile_results = np.load(os.path.join(CPC_q236_dir, f'time_profile_N_{N:05d}_seed_{q236_num_seeds}_{platform}.npy'))
+            peak_memory = np.load(os.path.join(CPC_q236_dir, f'memory_profile_N_{N:05d}_seed_{q236_num_seeds}_{platform}.npy'))
+
+            first_call_time.append(time_profile_results[0, :5])
+            steady_call_time.append(np.mean(time_profile_results[1:, :5], axis=0))
+            peak_memories.append(peak_memory)
+
+        first_call_time = np.array(first_call_time)
+        steady_call_time = np.array(steady_call_time)
+        peak_memories = np.array(peak_memories)
+
+        # Time profile plot
+        plt.figure(figsize=(10, 10))
+        colors = ['red', 'black', 'blue', 'green', 'orange']
+        num_Hv_steps = 5
+        for i in range(num_Hv_steps):
+            plt.plot(4*Ns**2, first_call_time[:, i], linestyle='-', linewidth=1, 
+                    marker='o', markersize=8, color=colors[i], label=f"First call - Step {i + 1}")
+
+        for i in range(num_Hv_steps):
+            if i > 1:
+                plt.plot(4*Ns**2, steady_call_time[:, i], linestyle='--', linewidth=1, 
+                        marker='s', markersize=8, color=colors[i], label=f"Steady call - Step {i + 1}")
+
+        plt.xlabel(r"Size of parameter vector", fontsize=20)
+        plt.ylabel("Time [s]", fontsize=20)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.tick_params(labelsize=20)
+        plt.legend(fontsize=20, frameon=False)
+        plt.savefig(os.path.join(CPC_q236_dir, f'q3_time_profile.pdf'), bbox_inches='tight')
+
+        # Peak memory profile plot
+        plt.figure(figsize=(10, 10))
+        num_Hv_steps = 5
+        plt.plot(4*Ns**2, peak_memories, linestyle='-', linewidth=1, 
+                marker='o', markersize=8, color='black')
+
+        plt.xlabel(r"Size of parameter vector", fontsize=20)
+        plt.ylabel("Peak memory [MiB]", fontsize=20)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.tick_params(labelsize=20)
+        plt.legend(fontsize=20, frameon=False)
+        plt.savefig(os.path.join(CPC_q236_dir, f'q3_memory_profile.pdf'), bbox_inches='tight')
+
+
+    figures_q6_flag = True
+    if figures_q6_flag: 
+        q236_num_seeds = 4
+        Ns = np.array([64, 128, 256, 512, 1024])
+
+        first_call_time_cpu = []
+        steady_call_time_cpu = []
+        first_call_time_gpu = []
+        steady_call_time_gpu = []
+
+        for N in Ns:
+            time_profile_results_cpu = np.load(os.path.join(CPC_q236_dir, f'time_profile_N_{N:05d}_seed_{q236_num_seeds}_cpu.npy'))
+            time_profile_results_gpu = np.load(os.path.join(CPC_q236_dir, f'time_profile_N_{N:05d}_seed_{q236_num_seeds}_gpu.npy'))
+
+            first_call_time_cpu.append(time_profile_results_cpu[0, 5:])
+            steady_call_time_cpu.append(np.mean(time_profile_results_cpu[1:, 5:], axis=0))
+            first_call_time_gpu.append(time_profile_results_gpu[0, 5:])
+            steady_call_time_gpu.append(np.mean(time_profile_results_gpu[1:, 5:], axis=0))
+ 
+        first_call_time_cpu = np.array(first_call_time_cpu)
+        steady_call_time_cpu = np.array(steady_call_time_cpu)
+        first_call_time_gpu = np.array(first_call_time_gpu)
+        steady_call_time_gpu = np.array(steady_call_time_gpu)
+
+        plt.figure(figsize=(10, 10))
+        plt.plot(4*Ns**2, first_call_time_cpu[:, 1], linestyle='-', linewidth=1, 
+                 marker='o', markersize=8, color='blue', label=f"First call - CPU")
+        plt.plot(4*Ns**2, first_call_time_gpu[:, 1], linestyle='-', linewidth=1, 
+                 marker='o', markersize=8, color='red', label=f"First call - GPU")
+
+        plt.plot(4*Ns**2, steady_call_time_cpu[:, 1], linestyle='--', linewidth=1, 
+                 marker='s', markersize=8, color='blue', label=f"Stead call - CPU")
+        plt.plot(4*Ns**2, steady_call_time_gpu[:, 1], linestyle='--', linewidth=1, 
+                 marker='s', markersize=8, color='red', label=f"Stead call - GPU")
+
+        plt.xlabel(r"Size of parameter vector", fontsize=20)
+        plt.ylabel("Time [s]", fontsize=20)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.tick_params(labelsize=20)
+        plt.legend(fontsize=20, frameon=False)
+        plt.savefig(os.path.join(CPC_q236_dir, f'q6_time_profile_F.pdf'), bbox_inches='tight')
+
+        plt.show()
+
+def generate_figures_CPC_revision():
+
+    # Reviewer 2: Repeating the Taylor-remainder check over many random parameter directions
+    hessp_option = 'rev_fwd' # Most efficient
+    seed_results = np.load(os.path.join(CPC_q1_dir, f"seed_results_{hessp_option}.npy"))
+    slopes = []
+
+    for taylor_results in seed_results:
+
+        hs, f_plus_val, f_val, v_f_grad, v_hess_v = taylor_results.T
+        res_zero = np.abs(f_plus_val - f_val)
+        res_first = np.abs(f_plus_val - f_val - v_f_grad)
+        res_second = np.abs(f_plus_val - f_val - v_f_grad - v_hess_v)
+        slopes.append([])
+        for i in range(len(hs) - 1):
+            # slope = np.log(res_second[0]/res_second[i + 1])/np.log(10.**(i + 1))
+            slope = np.log(res_second[i]/res_second[i + 1])/np.log(10.**(1))
+            slopes[-1].append(slope)
+            # print(slope)
+        # print("\n")
+
+    plt.figure(figsize=(10, 10))
+
+    for i in range(len(slopes)):
+        plt.plot(np.arange(len(slopes[i])) + 1, slopes[i], linestyle='-', linewidth=0.5, color='blue')
+    
+    plt.plot(np.arange(len(slopes[0])) + 1, 3.*np.ones(len(slopes[0])), linestyle='-', linewidth=2, color='red', label="Reference")
+    plt.xlabel(r"Line segment", fontsize=20)
+    plt.ylabel("Slope", fontsize=20)
+    plt.tick_params(labelsize=20)
+    plt.legend(fontsize=20, frameon=False)   
+
+    plt.savefig(os.path.join(CPC_q1_dir, f'slope.pdf'), bbox_inches='tight')
+
+    taylor_results = seed_results[0]
+    hs, f_plus_val, f_val, v_f_grad, v_hess_v = taylor_results.T
+    res_zero = np.abs(f_plus_val - f_val)
+    res_first = np.abs(f_plus_val - f_val - v_f_grad)
+    res_second = np.abs(f_plus_val - f_val - v_f_grad - v_hess_v)
+
+    ref_zero = [1/5.*res_zero[0]/hs[0] * h for h in hs]
+    ref_first = [1/5.*res_first[0]/hs[0]**2 * h**2 for h in hs]
+    ref_second = [1/5.*res_second[0]/hs[0]**3 * h**3 for h in hs]
+
+    print(f"slope = {np.log(res_second[0]/res_second[3])/np.log(10.**3)} for {hessp_option}")
+
+    plt.figure(figsize=(10, 10))
+    plt.plot(hs, res_zero, linestyle='-', marker='o', markersize=10, linewidth=2, color='blue', label=r"$r_{\textrm{zeroth}}$")
+    plt.plot(hs, ref_zero, linestyle='--', linewidth=2, color='blue', label='First order reference')
+    plt.plot(hs, res_first, linestyle='-', marker='o', markersize=10, linewidth=2, color='red', label=r"$r_{\textrm{first}}$")
+    plt.plot(hs, ref_first, linestyle='--', linewidth=2, color='red', label='Second order reference')
+    plt.plot(hs, res_second, linestyle='-', marker='o', markersize=10, linewidth=2, color='green', label=r"$r_{\textrm{second}}$")
+    plt.plot(hs, ref_second, linestyle='--', linewidth=2, color='green', label='Third order reference')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel(r"Scaling factor $\epsilon$", fontsize=20)
+    plt.ylabel("Residual", fontsize=20)
+    plt.tick_params(labelsize=20)
+    plt.legend(fontsize=20, frameon=False)   
+
+    plt.savefig(os.path.join(CPC_q1_dir, f'taylor_results_{hessp_option}_round_off.pdf'), bbox_inches='tight')
+
+    plt.show()
 
 
 def generate_figures():
@@ -310,7 +592,6 @@ def generate_figures():
         plt.xlabel(r"Scaling factor $\epsilon$", fontsize=20)
         plt.ylabel("Residual", fontsize=20)
         plt.tick_params(labelsize=20)
-        plt.tick_params(labelsize=20)
         plt.legend(fontsize=20, frameon=False)   
 
         val_pdf_dir_case = os.path.join(val_pdf_dir, hessp_option)
@@ -342,7 +623,6 @@ def generate_figures():
                          label=labels[i])
 
                 # plt.title(f'Histogram of relative errors')
-                plt.tick_params(labelsize=15)
                 plt.tick_params(labelsize=15)
                 plt.xlabel('Relative difference', fontsize=20)
                 plt.ylabel('Count', fontsize=20)
@@ -410,8 +690,9 @@ def relative_error_AD_modes():
     print(rel_err2)
 
 
-
 if __name__=="__main__":
     # workflow()
-    generate_figures()
     # relative_error_AD_modes()
+    # generate_figures_CPC_revision()
+    size_test_CPC_revision()
+

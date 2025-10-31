@@ -39,13 +39,15 @@ def adjoint_step(problem, u, θ, J_fn, F_fn, adjoint_solver_options):
     return λ, A
 
 
-def forward_and_adjoint(problem, θ, J_fn, solver_options, adjoint_solver_options):
+def forward_and_adjoint(problem, θ, J_fn, solver_options, adjoint_solver_options, timer):
     u, F_fn = forward_step(problem, θ, solver_options)
+    timer.append(time.perf_counter())
     λ, A = adjoint_step(problem, u, θ, J_fn, F_fn, adjoint_solver_options)
+    timer.append(time.perf_counter())
     return u, λ, F_fn, A
 
 
-def incremental_forward_and_adjoint(u, θ, λ, θ_hat, J_fn, F_fn, A, state_linear_solver, adjoint_linear_solver, option='rev_fwd'):
+def incremental_forward_and_adjoint(u, θ, λ, θ_hat, J_fn, F_fn, A, state_linear_solver, adjoint_linear_solver, timer, option='rev_fwd'):
     _, unflatten = jax.flatten_util.ravel_pytree(u)
 
     # Solve incremental forward problem
@@ -54,6 +56,7 @@ def incremental_forward_and_adjoint(u, θ, λ, θ_hat, J_fn, F_fn, A, state_line
     u_hat_rhs_vec = jax.flatten_util.ravel_pytree(u_hat_rhs)[0]
     u_hat_vec = state_linear_solver(A, -u_hat_rhs_vec)
     u_hat = unflatten(u_hat_vec)
+    timer.append(time.perf_counter())
 
     # Solve incremental adjoint problem
     logger.debug(f"################## Solve incremental adjoint problem...")
@@ -178,6 +181,7 @@ def incremental_forward_and_adjoint(u, θ, λ, θ_hat, J_fn, F_fn, A, state_line
     λ_hat_vec = adjoint_linear_solver(A_T, -λ_hat_rhs_vec)
     A.transpose() # This step is necessary because A may already be changed (in-place update)
     λ_hat = unflatten(λ_hat_vec)
+    timer.append(time.perf_counter())
 
     # Find hessian-vector product
     logger.debug(f"################## Find hessian-vector product...")
@@ -190,7 +194,8 @@ def incremental_forward_and_adjoint(u, θ, λ, θ_hat, J_fn, F_fn, A, state_line
                                            dθ_k_du_j_F_i_λ_i_u_hat_j, 
                                            dθ_k_dθ_j_F_i_λ_i_θ_hat_j,
                                            λ_hat_i_dF_i_dθ_k)
-
+    timer.append(time.perf_counter())
+    
     logger.debug(f"################## Finshed using AD to find HVP.\n")
 
     profile_info = [J_time, F_time]
